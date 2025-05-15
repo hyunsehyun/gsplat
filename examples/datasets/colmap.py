@@ -1,18 +1,19 @@
-import os
 import json
-from tqdm import tqdm
+import os
 from typing import Any, Dict, List, Optional
-from typing_extensions import assert_never
 
 import cv2
-from PIL import Image
 import imageio.v2 as imageio
 import numpy as np
 import torch
+from PIL import Image
 from pycolmap import SceneManager
+from tqdm import tqdm
+from typing_extensions import assert_never
+from pathlib import Path
 
 from .normalize import (
-    align_principle_axes,
+    align_principal_axes,
     similarity_from_cameras,
     transform_cameras,
     transform_points,
@@ -197,7 +198,14 @@ class Parser:
             image_files = sorted(_get_rel_paths(image_dir))
         colmap_to_image = dict(zip(colmap_files, image_files))
         image_paths = [os.path.join(image_dir, colmap_to_image[f]) for f in image_names]
-
+        
+        mask_dir = os.path.join(data_dir, "masks")
+        if not os.path.exists(mask_dir):
+            raise ValueError(f"Mask folder {mask_dir} does not exist.")
+        mask_paths = [os.path.join(mask_dir, f) for f in image_names]
+        mask_paths = [Path(p).with_suffix(".png") for p in mask_paths]
+        mask_paths = [str(p) if os.path.exists(p) else None for p in mask_paths]
+        
         # 3D points and {image_name -> [point_idx]}
         points = manager.points3D.astype(np.float32)
         points_err = manager.point3D_errors.astype(np.float32)
@@ -220,16 +228,34 @@ class Parser:
             camtoworlds = transform_cameras(T1, camtoworlds)
             points = transform_points(T1, points)
 
-            T2 = align_principle_axes(points)
+            T2 = align_principal_axes(points)
             camtoworlds = transform_cameras(T2, camtoworlds)
             points = transform_points(T2, points)
 
             transform = T2 @ T1
+
+            # Fix for up side down. We assume more points towards
+            # the bottom of the scene which is true when ground floor is
+            # present in the images.
+            if np.median(points[:, 2]) > np.mean(points[:, 2]):
+                # rotate 180 degrees around x axis such that z is flipped
+                T3 = np.array(
+                    [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0, 0.0],
+                        [0.0, 0.0, -1.0, 0.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ]
+                )
+                camtoworlds = transform_cameras(T3, camtoworlds)
+                points = transform_points(T3, points)
+                transform = T3 @ transform
         else:
             transform = np.eye(4)
 
         self.image_names = image_names  # List[str], (num_images,)
         self.image_paths = image_paths  # List[str], (num_images,)
+        self.mask_paths = mask_paths  # List[str], (num_images,)
         self.camtoworlds = camtoworlds  # np.ndarray, (num_images, 4, 4)
         self.camera_ids = camera_ids  # List[int], (num_images,)
         self.Ks_dict = Ks_dict  # Dict of camera_id -> K
@@ -357,6 +383,15 @@ class Dataset:
     def __getitem__(self, item: int) -> Dict[str, Any]:
         index = self.indices[item]
         image = imageio.imread(self.parser.image_paths[index])[..., :3]
+        
+        mask_path = self.parser.mask_paths[index]
+        if mask_path is not None:
+            frame_mask = imageio.imread(mask_path)
+            if len(frame_mask.shape) > 2:
+                frame_mask = frame_mask[..., 0]
+        else:
+            frame_mask = np.ones_like(image[..., 0])
+            
         camera_id = self.parser.camera_ids[index]
         K = self.parser.Ks_dict[camera_id].copy()  # undistorted K
         params = self.parser.params_dict[camera_id]
@@ -389,7 +424,9 @@ class Dataset:
             "image_id": item,  # the index of the image in the dataset
         }
         if mask is not None:
-            data["mask"] = torch.from_numpy(mask).bool()
+            frame_mask = frame_mask * mask
+            
+        data["mask"] = torch.from_numpy(frame_mask).bool()
 
         if self.load_depths:
             # projected points to image plane to get depths
@@ -424,7 +461,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir", type=str, default="data/360_v2/garden")
-    parser.add_argument("--factor", type=int, default=4)
+    parser.add_argument("--factor", type=int, default=1) ##factor
     args = parser.parse_args()
 
     # Parse COLMAP data.
