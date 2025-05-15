@@ -43,7 +43,7 @@ class Config:
     # Path to the Mip-NeRF 360 dataset
     data_dir: str = "data/360_v2/garden"
     # Downsample factor for the dataset
-    data_factor: int = 4
+    data_factor: int = 1
     # Directory to save results
     result_dir: str = "results/garden"
     # Every N images there is a test image
@@ -62,11 +62,11 @@ class Config:
     steps_scaler: float = 1.0
 
     # Number of training steps
-    max_steps: int = 30_000
+    max_steps: int = 100_000
     # Steps to evaluate the model
-    eval_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
+    eval_steps: List[int] = field(default_factory=lambda: [7_000, 30_000,100_000])
     # Steps to save the model
-    save_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
+    save_steps: List[int] = field(default_factory=lambda: [7_000, 30_000,100_000])
 
     # Initialization strategy
     init_type: str = "sfm"
@@ -75,7 +75,7 @@ class Config:
     # Initial extent of GSs as a multiple of the camera extent. Ignored if using sfm
     init_extent: float = 3.0
     # Degree of spherical harmonics
-    sh_degree: int = 3
+    sh_degree: int = 0
     # Turn on another SH degree every this steps
     sh_degree_interval: int = 1000
     # Initial opacity of GS
@@ -102,7 +102,7 @@ class Config:
     # Start refining GSs after this iteration
     refine_start_iter: int = 500
     # Stop refining GSs after this iteration
-    refine_stop_iter: int = 15_000
+    refine_stop_iter: int = 50_000
     # Reset opacities every this steps
     reset_every: int = 3000
     # Refine GSs every this steps
@@ -146,14 +146,14 @@ class Config:
     depth_lambda: float = 1e-2
 
     # Enable normal consistency loss. (Currently for 2DGS only)
-    normal_loss: bool = False
+    normal_loss: bool = True
     # Weight for normal loss
     normal_lambda: float = 5e-2
     # Iteration to start normal consistency regulerization
     normal_start_iter: int = 7_000
 
     # Distortion loss. (experimental)
-    dist_loss: bool = False
+    dist_loss: bool = True
     # Weight for distortion loss
     dist_lambda: float = 1e-2
     # Iteration to start distortion loss regulerization
@@ -731,7 +731,7 @@ class Runner:
 
             if not cfg.disable_viewer:
                 self.viewer.lock.release()
-                num_train_steps_per_sec = 1.0 / (time.time() - tic)
+                num_train_steps_per_sec = 1.0 / (max(time.time() - tic, 1e-10))
                 num_train_rays_per_sec = (
                     num_train_rays_per_step * num_train_steps_per_sec
                 )
@@ -781,7 +781,7 @@ class Runner:
             colors = torch.clamp(colors, 0.0, 1.0)
             colors = colors[..., :3]  # Take RGB channels
             torch.cuda.synchronize()
-            ellipse_time += time.time() - tic
+            ellipse_time += max(time.time() - tic, 1e-10)
 
             # write images
             canvas = torch.cat([pixels, colors], dim=2).squeeze(0).cpu().numpy()
